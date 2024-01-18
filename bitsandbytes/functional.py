@@ -117,7 +117,6 @@ class GlobalPageManager:
             prefetch_tensor(t, to_cpu)
 
 
-
 class CUBLAS_Context:
     _instance = None
 
@@ -301,7 +300,6 @@ def create_fp8_map(signed=True, exponent_bits=5, precision_bits=2, total_bits=8)
     return code
 
 
-
 def create_dynamic_map(signed=True, max_exponent_bits=7, total_bits=8):
     """
     Creates the dynamic quantiztion map.
@@ -351,6 +349,7 @@ def create_dynamic_map(signed=True, max_exponent_bits=7, total_bits=8):
 
     data.sort()
     return Tensor(data)
+
 
 def create_quantile_map(A, total_bits=8):
     q = estimate_quantiles(A, num_quantiles=2**total_bits-1)
@@ -570,53 +569,64 @@ def estimate_quantiles(A: Tensor, out: Tensor = None, offset: float = 1 / 512, n
 
 class QuantState:
     """Container for quantization state components to work with Params4bit and similar classes"""
-    def __init__(self, delta, min_val, shape=None, dtype=None, blocksize=None, quant_type=None, state2=None):
+    def __init__(self, delta, min_val, shape=None, code=None, blocksize=None, quant_type=None, dtype=None):
         self.delta = delta
         self.min_val = min_val
         self.shape = shape
+        self.code = code
         self.dtype = dtype
         self.blocksize = blocksize
         self.quant_type = quant_type
-        self.state2 = state2
-        self.nested = state2 is not None
 
+    def __get_item__(self, idx):
+        """
+        ensures compatibility with older quant state scheme with nested lists.
+        assumes the following layout:
+        state = [delta, min_value, input_shape, A.dtype, blocksize, [offset, state2], quant_type]
+        """
+        list_repr = [self.delta, self.min_val, self.shape, self.dtype, self.blocksize, None, self.quant_type]
+        return list_repr[idx]
+    
     @classmethod
     def from_dict(cls, qs_dict: Dict[str, Any], device: torch.device) -> 'QuantState':
         """
         Unpacks components of state_dict into QuantState.
         Converts necessary items to appropriate types.
         """
-        qs_dict = {k.split('.')[-1]: v for k, v in qs_dict.items()}  # strip prefixes
+        raise NotImplementedError
+        # qs_dict = {k.split('.')[-1]: v for k, v in qs_dict.items()}  # strip prefixes
 
-        state2 = cls.from_dict(qs_dict['state2'], device) if 'state2' in qs_dict else None
+        # state2 = cls.from_dict(qs_dict['state2'], device) if 'state2' in qs_dict else None
 
-        return cls(
-            delta=qs_dict['delta'].to(device),
-            min_val=qs_dict['min_val'].to(device),
-            shape=torch.Size(qs_dict['shape']) if qs_dict['shape'] is not None else None,
-            dtype=getattr(torch, qs_dict['dtype']),
-            blocksize=int(qs_dict['blocksize']),
-            quant_type=qs_dict['quant_type'],
-            state2=state2
-        )
+        # return cls(
+        #     delta=qs_dict['delta'].to(device),
+        #     min_val=qs_dict['min_val'].to(device),
+        #     shape=torch.Size(qs_dict['shape']) if qs_dict['shape'] is not None else None,
+        #     dtype=getattr(torch, qs_dict['dtype']),
+        #     blocksize=int(qs_dict['blocksize']),
+        #     quant_type=qs_dict['quant_type'],
+        #     state2=state2
+        # )
 
     def as_dict(self, packed=False):
         """
         Returns dict of tensors and strings to use in serialization via _save_to_state_dict()
         """
-        qs_dict = {
-            'delta': self.delta,
-            'min_val': self.min_val,
-            'shape': tuple(self.shape),
-            'dtype': str(self.dtype).strip('torch.'),
-            'blocksize': self.blocksize,
-            'quant_type': self.quant_type
-        }
+        raise NotImplementedError
+        
+        # qs_dict = {
+        #     'delta': self.delta,
+        #     'min_val': self.min_val,
+        #     'shape': tuple(self.shape),
+        #     'dtype': str(self.dtype).strip('torch.'),
+        #     'blocksize': self.blocksize,
+        #     'quant_type': self.quant_type
+        # }
 
-        if self.nested:
-            qs_dict['state2'] = self.state2.as_dict(packed)
+        # if self.nested:
+        #     qs_dict['state2'] = self.state2.as_dict(packed)
 
-        return qs_dict
+        # return qs_dict
 
     def to(self, device):
         """
@@ -624,8 +634,6 @@ class QuantState:
         """
         self.delta = self.delta.to(device)
         self.min_val = self.min_val.to(device)
-        if self.nested:
-            self.state2.to(device)
 
 
 def quantize_blockwise(A: Tensor, code: Tensor = None, absmax: Tensor = None, out: Tensor = None, blocksize=4096, nested=False) -> Tensor:
@@ -831,7 +839,7 @@ def quantize_fp4(A: Tensor, absmax: Tensor = None, out: Tensor = None, blocksize
 def quantize_nf4(A: Tensor, absmax: Tensor = None, out: Tensor = None, blocksize=64, compress_statistics=False, quant_storage=torch.uint8):
     return quantize_4bit(A, absmax, out, blocksize, compress_statistics, 'nf4', quant_storage)
 
-def quantize_4bit(A: torch.Tensor, delta: torch.Tensor, min_val: torch.Tensor, out: torch.Tensor = None, blocksize=64, quant_type='int4', quant_storage=torch.uint8) -> torch.Tensor:
+def quantize_4bit(A: torch.Tensor, delta: torch.Tensor = None, min_val: torch.Tensor = None, out: torch.Tensor = None, blocksize=64, quant_type='int4', quant_storage=torch.uint8) -> torch.Tensor:
     """
     Quantize tensor A in blocks of 4-bit values using delta and min_val for each block.
 
@@ -865,6 +873,13 @@ def quantize_4bit(A: torch.Tensor, delta: torch.Tensor, min_val: torch.Tensor, o
     n = A.numel()
     input_shape = A.shape
 
+    if delta is None or min_val is None:
+        blocks = n // blocksize
+        blocks += 1 if n % blocksize > 0 else 0
+        delta = torch.zeros((blocks,), device=A.device, dtype=torch.float32)
+        min_val = torch.zeros((blocks,), device=A.device, dtype=torch.float32)
+
+    
     if out is None:
         mod = dtype2bytes[quant_storage] * 2
         out = torch.zeros(((n + 1) // mod, 1), dtype=quant_storage, device=A.device)
@@ -875,11 +890,11 @@ def quantize_4bit(A: torch.Tensor, delta: torch.Tensor, min_val: torch.Tensor, o
     is_on_gpu([A, out, delta, min_val])
 
     if A.dtype == torch.float32:
-        lib.cquantize_blockwise_fp32_int4(get_ptr(A), get_ptr(out), ct.c_int(n))
-    elif A.dtype == torch.float16:
-        lib.cquantize_blockwise_fp16_int4(get_ptr(A), get_ptr(out), ct.c_int(n))
+        lib.cquantize_blockwise_fp32_int4(get_ptr(None), get_ptr(A), get_ptr(delta), get_ptr(min_val), get_ptr(out), ct.c_int32(blocksize), ct.c_int(n))
+            elif A.dtype == torch.float16:
+        lib.cquantize_blockwise_fp16_int4(get_ptr(None), get_ptr(A), get_ptr(delta), get_ptr(min_val), get_ptr(out), ct.c_int32(blocksize), ct.c_int(n))
     elif A.dtype == torch.bfloat16:
-        lib.cquantize_blockwise_bf16_int4(get_ptr(A), get_ptr(out), ct.c_int(n))
+        lib.cquantize_blockwise_bf16_int4(get_ptr(None), get_ptr(A), get_ptr(delta), get_ptr(min_val), get_ptr(out), ct.c_int32(blocksize), ct.c_int(n))
     else:
         raise ValueError(f"Blockwise quantization only supports 16/32-bit floats, but got {A.dtype}")
 
@@ -890,14 +905,13 @@ def quantize_4bit(A: torch.Tensor, delta: torch.Tensor, min_val: torch.Tensor, o
 
     return out, state
 
-
 def dequantize_fp4(A: Tensor, quant_state: QuantState = None, absmax: Tensor = None, out: Tensor = None, blocksize: int = 64) -> Tensor:
     return dequantize_4bit(A, quant_state, absmax, out, blocksize, 'fp4')
 
 def dequantize_nf4(A: Tensor, quant_state: QuantState = None, absmax: Tensor = None, out: Tensor = None, blocksize: int = 64) -> Tensor:
     return dequantize_4bit(A, quant_state, absmax, out, blocksize, 'nf4')
 
-def dequantize_4bit(A: torch.Tensor, quant_state: QuantState, out: torch.Tensor = None, blocksize: int = 64, quant_type='int4') -> torch.Tensor:
+def dequantize_4bit(A: torch.Tensor, quant_state: QuantState, delta: torch.Tensor = None, min_val: torch.Tensor = None, out: torch.Tensor = None, blocksize: int = 64, quant_type='int4') -> torch.Tensor:
     """
     Dequantizes 4-bit blockwise quantized values.
 
@@ -935,11 +949,11 @@ def dequantize_4bit(A: torch.Tensor, quant_state: QuantState, out: torch.Tensor 
     is_on_gpu([A, quant_state.delta, quant_state.min_val, out])
 
     if out.dtype == torch.float32:
-        lib.cdequantize_blockwise_fp32_int4(get_ptr(A), get_ptr(quant_state.delta), get_ptr(quant_state.min_val), get_ptr(out), ct.c_int(n))
+        lib.cdequantize_blockwise_fp32_int4(get_ptr(None), get_ptr(A), get_ptr(quant_state.delta), get_ptr(quant_state.min_val), get_ptr(out), ct.c_int(quant_state.blocksize), ct.c_int(n))
     elif out.dtype == torch.float16:
-        lib.cdequantize_blockwise_fp16_int4(get_ptr(A), get_ptr(quant_state.delta), get_ptr(quant_state.min_val), get_ptr(out), ct.c_int(n))
+        lib.cdequantize_blockwise_fp16_int4(get_ptr(None), get_ptr(A), get_ptr(quant_state.delta), get_ptr(quant_state.min_val), get_ptr(out), ct.c_int(quant_state.blocksize), ct.c_int(n))
     elif out.dtype == torch.bfloat16:
-        lib.cdequantize_blockwise_bf16_int4(get_ptr(A), get_ptr(quant_state.delta), get_ptr(quant_state.min_val), get_ptr(out), ct.c_int(n))
+        lib.cdequantize_blockwise_bf16_int4(get_ptr(None), get_ptr(A), get_ptr(quant_state.delta), get_ptr(quant_state.min_val), get_ptr(out), ct.c_int(quant_state.blocksize), ct.c_int(n))
     else:
         raise ValueError(f"Dequantization only supports 16/32-bit floats, but got {out.dtype}")
         

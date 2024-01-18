@@ -147,8 +147,7 @@ class Params4bit(torch.nn.Parameter):
             requires_grad=True,
             quant_state: QuantState = None,
             blocksize: int = 64,
-            compress_statistics: bool = True,
-            quant_type: str = 'fp4',
+            quant_type: str = 'int4',
             quant_storage: torch.dtype = torch.uint8,
             module: Optional["Linear4bit"] = None,
             bnb_quantized: bool = False
@@ -158,7 +157,6 @@ class Params4bit(torch.nn.Parameter):
 
         self = torch.Tensor._make_subclass(cls, data, requires_grad)
         self.blocksize = blocksize
-        self.compress_statistics = compress_statistics
         self.quant_type = quant_type
         self.quant_state = quant_state
         self.quant_storage = quant_storage
@@ -173,14 +171,13 @@ class Params4bit(torch.nn.Parameter):
         self.requires_grad = requires_grad
         self.quant_state = QuantState.from_dict(qs_dict=quantized_stats, device=device)
         self.blocksize = self.quant_state.blocksize
-        self.compress_statistics = self.quant_state.nested
         self.quant_type = self.quant_state.quant_type
         self.bnb_quantized = True
         return self
 
     def _quantize(self, device):
         w = self.data.contiguous().cuda(device)
-        w_4bit, quant_state = bnb.functional.quantize_4bit(w, blocksize=self.blocksize, compress_statistics=self.compress_statistics,
+        w_4bit, quant_state = bnb.functional.quantize_4bit(w, blocksize=self.blocksize,
                                                            quant_type=self.quant_type, quant_storage=self.quant_storage)
         self.data = w_4bit
         self.quant_state = quant_state
@@ -189,19 +186,19 @@ class Params4bit(torch.nn.Parameter):
         self.bnb_quantized = True
         return self
 
-    def cuda(self, device: Optional[Union[int, device, str]] = None, non_blocking: bool = False):
+    def cuda(self, device: Optional[Union[int, torch.device, str]] = None, non_blocking: bool = False):
         return self.to(device='cuda' if device is None else device, non_blocking=non_blocking)
 
     @overload
-    def to(self: T, device: Optional[Union[int, device]] = ..., dtype: Optional[Union[dtype, str]] = ..., non_blocking: bool = ...,) -> T:
+    def to(self: T, device: Optional[Union[int, torch.device]] = ..., dtype: Optional[Union[torch.dtype, str]] = ..., non_blocking: bool = ...,) -> T:
         ...
 
     @overload
-    def to(self: T, dtype: Union[dtype, str], non_blocking: bool = ...) -> T:
+    def to(self: T, dtype: Union[torch.dtype, str], non_blocking: bool = ...) -> T:
         ...
 
     @overload
-    def to(self: T, tensor: Tensor, non_blocking: bool = ...) -> T:
+    def to(self: T, tensor: torch.Tensor, non_blocking: bool = ...) -> T:
         ...
 
     def to(self, *args, **kwargs):
@@ -215,17 +212,19 @@ class Params4bit(torch.nn.Parameter):
 
             new_param = Params4bit(super().to(device=device, dtype=dtype, non_blocking=non_blocking),
                                    requires_grad=self.requires_grad, quant_state=self.quant_state,
-                                   blocksize=self.blocksize, compress_statistics=self.compress_statistics,
-                                   quant_type=self.quant_type)
+                                   blocksize=self.blocksize, quant_type=self.quant_type)
 
             return new_param
 
 
 class Linear4bit(nn.Linear):
-
     def __init__(self, input_features, output_features, bias=True, compute_dtype=None, compress_statistics=True, quant_type='fp4', quant_storage=torch.uint8, device=None):
         super().__init__(input_features, output_features, bias, device)
-        self.weight = Params4bit(self.weight.data, requires_grad=False, compress_statistics=compress_statistics, quant_type=quant_type, quant_storage=quant_storage, module=self)
+
+        quant_type="int4"
+        # Keep the input of Linear4bit untouched but change the initialization for Params4bit.
+        self.weight = Params4bit(self.weight.data, requires_grad=False, quant_type=quant_type, quant_storage=quant_storage, module=self)
+        
         # self.persistent_buffers = []  # TODO consider as way to save quant state
         self.compute_dtype = compute_dtype
         self.compute_type_is_set = False

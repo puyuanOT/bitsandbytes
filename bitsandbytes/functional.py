@@ -569,122 +569,63 @@ def estimate_quantiles(A: Tensor, out: Tensor = None, offset: float = 1 / 512, n
 
 
 class QuantState:
-    """container for quantization state components to work with Params4bit and similar clases"""
-    valid_quant_types = ('fp4', 'nf4')
-    valid_qs_type_keys = [f"bitsandbytes__{x}" for x in valid_quant_types]
-    valid_qs_keys = ['absmax', 'quant_map', 'nested_absmax', 'nested_quant_map', 'quant_state', 'quant_type',
-                     'blocksize', 'dtype', 'shape', 'nested_blocksize', 'nested_dtype', 'nested_offset']
-
-    def __init__(self, absmax, shape=None, code=None, blocksize=None, quant_type=None, dtype=None, offset=None, state2=None):
-        self.absmax = absmax
+    """Container for quantization state components to work with Params4bit and similar classes"""
+    def __init__(self, delta, min_val, shape=None, dtype=None, blocksize=None, quant_type=None, state2=None):
+        self.delta = delta
+        self.min_val = min_val
         self.shape = shape
-        self.code = code
         self.dtype = dtype
         self.blocksize = blocksize
         self.quant_type = quant_type
-        self.offset = offset
         self.state2 = state2
         self.nested = state2 is not None
-
-    def __get_item__(self, idx):
-        """
-        ensures compatibility with older quant state scheme with nested lists.
-        assumes the following layout:
-        state = [qabsmax, input_shape, A.dtype, blocksize, [offset, state2], quant_type]
-        state2 = [absmax, input_shape, A.dtype, blocksize, None, quant_type]
-        """
-        if self.nested:
-            list_repr = [self.absmax, self.shape, self.dtype, self.blocksize, [self.offset, self.state2], self.quant_type]
-        else:
-            list_repr = [self.absmax, self.shape, self.dtype, self.blocksize, None, self.quant_type]
-        return list_repr[idx]
 
     @classmethod
     def from_dict(cls, qs_dict: Dict[str, Any], device: torch.device) -> 'QuantState':
         """
-        unpacks components of state_dict into QuantState
-        where necessary, convert into strings, torch.dtype, ints, etc.
-
-        qs_dict: based on state_dict, with only relevant keys, striped of prefixes.
-
-        item with key `quant_state.bitsandbytes__[nf4/fp4]` may contain minor and non-tensor quant state items.
+        Unpacks components of state_dict into QuantState.
+        Converts necessary items to appropriate types.
         """
-
-        # unpacking tensor with non-tensor components
-        qs_key = [k for k, v in qs_dict.items() if "quant_state" in k and isinstance(v, torch.Tensor)]
-        if not len(qs_key) and 'quant_type' not in qs_dict:
-            raise ValueError("Expected packed or unpacked quant_state items, found neither")
-        elif len(qs_key) != 1 or qs_key[0].split(".")[-1] not in cls.valid_qs_type_keys:
-            raise ValueError(f"There should be exactly one `quant_state` item with ending from {cls.valid_qs_type_keys}.\nDetected {qs_key}.")
-
-        # unpacking minor and non-tensor quant state items if necessary
-        if len(qs_key) == 1:
-            qs_key = qs_key[0]
-            qs_dict.update(unpack_tensor_to_dict(qs_dict.pop(qs_key)))
-
         qs_dict = {k.split('.')[-1]: v for k, v in qs_dict.items()}  # strip prefixes
-        assert set(qs_dict.keys()).issubset(cls.valid_qs_keys)
 
-        if 'nested_absmax' in qs_dict:
-            offset = torch.tensor(float(qs_dict['nested_offset'])).to(device)
-            state2 = cls(
-                absmax=qs_dict['nested_absmax'].to(device),
-                blocksize=qs_dict['nested_blocksize'],
-                code=qs_dict['nested_quant_map'].to(device),
-                dtype=getattr(torch, qs_dict['nested_dtype']),
-            )
-        else:
-            offset, state2 = None, None
+        state2 = cls.from_dict(qs_dict['state2'], device) if 'state2' in qs_dict else None
 
-        quant_state = cls(
-            quant_type=qs_dict['quant_type'],
-            absmax=qs_dict['absmax'].to(device),
-            blocksize=qs_dict['blocksize'],
-            code=qs_dict['quant_map'].to(device),
-            dtype=getattr(torch, qs_dict['dtype']),
+        return cls(
+            delta=qs_dict['delta'].to(device),
+            min_val=qs_dict['min_val'].to(device),
             shape=torch.Size(qs_dict['shape']) if qs_dict['shape'] is not None else None,
-            offset=offset,
-            state2=state2,
+            dtype=getattr(torch, qs_dict['dtype']),
+            blocksize=int(qs_dict['blocksize']),
+            quant_type=qs_dict['quant_type'],
+            state2=state2
         )
-        return quant_state
 
     def as_dict(self, packed=False):
         """
-        returns dict of tensors and strings to use in serialization via _save_to_state_dict()
-        param: packed -- returns dict[str, torch.Tensor] for state_dict fit for safetensors saving
+        Returns dict of tensors and strings to use in serialization via _save_to_state_dict()
         """
         qs_dict = {
-            'quant_type': self.quant_type,
-            'absmax': self.absmax,
-            'blocksize': self.blocksize,
-            'quant_map': self.code,
-            'dtype': str(self.dtype).strip('torch.'),
+            'delta': self.delta,
+            'min_val': self.min_val,
             'shape': tuple(self.shape),
+            'dtype': str(self.dtype).strip('torch.'),
+            'blocksize': self.blocksize,
+            'quant_type': self.quant_type
         }
-        if self.nested:
-            qs_dict.update({
-                'nested_absmax': self.state2.absmax,
-                'nested_blocksize': self.state2.blocksize,
-                'nested_quant_map': self.state2.code.clone(),  # un-shared to avoid restoring it after shared tensors are removed by safetensors
-                'nested_dtype': str(self.state2.dtype).strip('torch.'),
-                'nested_offset': self.offset.item(),
-            })
-        if not packed:
-            return qs_dict
 
-        # packed format allows serialization of non-tensor components, critical for saving in safetensors format
-        qs_packed_dict = {k: v for k, v in qs_dict.items() if isinstance(v, torch.Tensor)}
-        non_tensor_dict = {k: v for k, v in qs_dict.items() if not isinstance(v, torch.Tensor)}
-        qs_packed_dict["quant_state." + "bitsandbytes__" + self.quant_type] = pack_dict_to_tensor(non_tensor_dict)
-        return qs_packed_dict
+        if self.nested:
+            qs_dict['state2'] = self.state2.as_dict(packed)
+
+        return qs_dict
 
     def to(self, device):
-        # make sure the quantization state is on the right device
-        self.absmax = self.absmax.to(device)
+        """
+        Ensures the quantization state is on the right device.
+        """
+        self.delta = self.delta.to(device)
+        self.min_val = self.min_val.to(device)
         if self.nested:
-            self.offset = self.offset.to(device)
-            self.state2.absmax = self.state2.absmax.to(device)
-            self.state2.code = self.state2.code.to(device)
+            self.state2.to(device)
 
 
 def quantize_blockwise(A: Tensor, code: Tensor = None, absmax: Tensor = None, out: Tensor = None, blocksize=4096, nested=False) -> Tensor:
@@ -890,86 +831,65 @@ def quantize_fp4(A: Tensor, absmax: Tensor = None, out: Tensor = None, blocksize
 def quantize_nf4(A: Tensor, absmax: Tensor = None, out: Tensor = None, blocksize=64, compress_statistics=False, quant_storage=torch.uint8):
     return quantize_4bit(A, absmax, out, blocksize, compress_statistics, 'nf4', quant_storage)
 
-def quantize_4bit(A: Tensor, absmax: Tensor = None, out: Tensor = None, blocksize=64, compress_statistics=False, quant_type='fp4', quant_storage=torch.uint8) -> Tensor:
+def quantize_4bit(A: torch.Tensor, delta: torch.Tensor, min_val: torch.Tensor, out: torch.Tensor = None, blocksize=64, quant_type='int4', quant_storage=torch.uint8) -> torch.Tensor:
     """
-    Quantize tensor A in blocks of 4-bit values.
-
-    Quantizes tensor A by dividing it into blocks which are independently quantized to FP4.
+    Quantize tensor A in blocks of 4-bit values using delta and min_val for each block.
 
     Parameters
     ----------
     A : torch.Tensor
         The input tensor.
-    absmax : torch.Tensor
-        The absmax values.
+    delta : torch.Tensor
+        The scaling factor for each block.
+    min_val : torch.Tensor
+        The minimum value (offset) for each block.
     out : torch.Tensor
         The output tensor.
     blocksize : int
         The blocksize used in quantization.
     quant_type : str
-        The 4-bit quantization data type {fp4, nf4}
+        The 4-bit quantization data type {int4}.
 
     Returns
     -------
     torch.Tensor:
         Tensor with packed 4-bit values.
-    tuple(torch.Tensor, torch.Size, torch.dtype, int):
+    QuantState:
         The quantization state to undo the quantization.
     """
     if A.device.type != 'cuda':
-        raise NotImplementedError(f'Device type not supported for FP4 quantization: {A.device.type}')
-    if quant_type not in ['fp4', 'nf4']:
+        raise NotImplementedError(f'Device type not supported for 4-bit quantization: {A.device.type}')
+    if quant_type != 'int4':
         raise NotImplementedError(f'4-bit quantization data type {quant_type} is not implemented.')
 
     n = A.numel()
     input_shape = A.shape
 
-    if absmax is None:
-        blocks = n // blocksize
-        blocks += 1 if n % blocksize > 0 else 0
-        absmax = torch.zeros((blocks,), device=A.device, dtype=torch.float32)
-
-
     if out is None:
         mod = dtype2bytes[quant_storage] * 2
-        out = torch.zeros(((n+1)//mod, 1), dtype=quant_storage, device=A.device)
+        out = torch.zeros(((n + 1) // mod, 1), dtype=quant_storage, device=A.device)
 
     assert blocksize in [4096, 2048, 1024, 512, 256, 128, 64]
 
     prev_device = pre_call(A.device)
-    is_on_gpu([A, out, absmax])
+    is_on_gpu([A, out, delta, min_val])
 
     if A.dtype == torch.float32:
-        if quant_type == 'fp4':
-            lib.cquantize_blockwise_fp32_fp4(get_ptr(None), get_ptr(A), get_ptr(absmax), get_ptr(out), ct.c_int32(blocksize), ct.c_int(n))
-        else:
-            lib.cquantize_blockwise_fp32_nf4(get_ptr(None), get_ptr(A), get_ptr(absmax), get_ptr(out), ct.c_int32(blocksize), ct.c_int(n))
+        lib.cquantize_blockwise_fp32_int4(get_ptr(A), get_ptr(out), ct.c_int(n))
     elif A.dtype == torch.float16:
-        if quant_type == 'fp4':
-            lib.cquantize_blockwise_fp16_fp4(get_ptr(None), get_ptr(A), get_ptr(absmax), get_ptr(out), ct.c_int32(blocksize), ct.c_int(n))
-        else:
-            lib.cquantize_blockwise_fp16_nf4(get_ptr(None), get_ptr(A), get_ptr(absmax), get_ptr(out), ct.c_int32(blocksize), ct.c_int(n))
+        lib.cquantize_blockwise_fp16_int4(get_ptr(A), get_ptr(out), ct.c_int(n))
     elif A.dtype == torch.bfloat16:
-        if quant_type == 'fp4':
-            lib.cquantize_blockwise_bf16_fp4(get_ptr(None), get_ptr(A), get_ptr(absmax), get_ptr(out), ct.c_int32(blocksize), ct.c_int(n))
-        else:
-            lib.cquantize_blockwise_bf16_nf4(get_ptr(None), get_ptr(A), get_ptr(absmax), get_ptr(out), ct.c_int32(blocksize), ct.c_int(n))
+        lib.cquantize_blockwise_bf16_int4(get_ptr(A), get_ptr(out), ct.c_int(n))
     else:
         raise ValueError(f"Blockwise quantization only supports 16/32-bit floats, but got {A.dtype}")
+
     post_call(A.device)
 
     code = get_4bit_type(quant_type, device=A.device)
-
-    if compress_statistics:
-        offset = absmax.mean()
-        absmax -= offset
-        qabsmax, state2 = quantize_blockwise(absmax, blocksize=256)
-        del absmax
-        state = QuantState(absmax=qabsmax, shape=input_shape, dtype=A.dtype, blocksize=blocksize, code=code, quant_type=quant_type, offset=offset, state2=state2)
-    else:
-        state = QuantState(absmax=absmax, shape=input_shape, dtype=A.dtype, blocksize=blocksize, code=code, quant_type=quant_type, )
+    state = QuantState(delta=delta, min_val=min_val, shape=input_shape, dtype=A.dtype, blocksize=blocksize, code=code, quant_type=quant_type)
 
     return out, state
+
 
 def dequantize_fp4(A: Tensor, quant_state: QuantState = None, absmax: Tensor = None, out: Tensor = None, blocksize: int = 64) -> Tensor:
     return dequantize_4bit(A, quant_state, absmax, out, blocksize, 'fp4')
@@ -977,51 +897,34 @@ def dequantize_fp4(A: Tensor, quant_state: QuantState = None, absmax: Tensor = N
 def dequantize_nf4(A: Tensor, quant_state: QuantState = None, absmax: Tensor = None, out: Tensor = None, blocksize: int = 64) -> Tensor:
     return dequantize_4bit(A, quant_state, absmax, out, blocksize, 'nf4')
 
-def dequantize_4bit(A: Tensor, quant_state: QuantState = None, absmax: Tensor = None, out: Tensor = None, blocksize: int = 64, quant_type='fp4') -> Tensor:
+def dequantize_4bit(A: torch.Tensor, quant_state: QuantState, out: torch.Tensor = None, blocksize: int = 64, quant_type='int4') -> torch.Tensor:
     """
-    Dequantizes FP4 blockwise quantized values.
+    Dequantizes 4-bit blockwise quantized values.
 
-    Dequantizes the tensor A with maximum absolute values absmax in blocks of size blocksize.
+    Dequantizes the tensor A using delta and min_val for each block.
 
     Parameters
     ----------
     A : torch.Tensor
         The input tensor (packed 4-bit values).
     quant_state : QuantState
-        object with quantisation stats, incl. absmax values, original tensor shape and original dtype.
-    absmax : torch.Tensor
-        The absmax values.
+        Object with quantization stats, incl. delta and min_val for each block, original tensor shape and original dtype.
     out : torch.Tensor
         Dequantized output tensor.
     blocksize : int
         The blocksize used in quantization.
     quant_type : str
-        The 4-bit quantization data type {fp4, nf4}
-
+        The 4-bit quantization data type {int4}.
 
     Returns
     -------
     torch.Tensor:
         Dequantized tensor.
     """
-    if blocksize not in [2048, 4096, 1024, 512, 256, 128, 64]:
-        raise ValueError(f"The blockwise of {blocksize} is not supported. Supported values: [2048, 4096, 1024, 512, 256, 128, 64]")
-    if quant_type not in ['fp4', 'nf4']:
+    if blocksize not in [4096, 2048, 1024, 512, 256, 128, 64]:
+        raise ValueError(f"The blocksize of {blocksize} is not supported. Supported values: [4096, 2048, 1024, 512, 256, 128, 64]")
+    if quant_type != 'int4':
         raise NotImplementedError(f'4-bit quantization data type {quant_type} is not implemented.')
-
-    if quant_state is None:
-        assert absmax is not None and out is not None
-
-        quant_state = QuantState(absmax=absmax, shape=out.shape, dtype=out.dtype, blocksize=blocksize, quant_type=quant_type)
-
-    else:
-        absmax = quant_state.absmax
-
-
-    if quant_state.nested:
-        absmax = dequantize_blockwise(quant_state.absmax, quant_state.state2)
-        absmax += quant_state.offset
-        if absmax.dtype != torch.float32: absmax = absmax.float()
 
     if out is None:
         out = torch.empty(quant_state.shape, dtype=quant_state.dtype, device=A.device)
@@ -1029,24 +932,17 @@ def dequantize_4bit(A: Tensor, quant_state: QuantState = None, absmax: Tensor = 
     n = out.numel()
 
     device = pre_call(A.device)
-    is_on_gpu([A, absmax, out])
+    is_on_gpu([A, quant_state.delta, quant_state.min_val, out])
+
     if out.dtype == torch.float32:
-        if quant_state.quant_type == 'fp4':
-            lib.cdequantize_blockwise_fp32_fp4(get_ptr(None), get_ptr(A), get_ptr(absmax), get_ptr(out), ct.c_int(quant_state.blocksize), ct.c_int(n))
-        else:
-            lib.cdequantize_blockwise_fp32_nf4(get_ptr(None), get_ptr(A), get_ptr(absmax), get_ptr(out), ct.c_int(quant_state.blocksize), ct.c_int(n))
+        lib.cdequantize_blockwise_fp32_int4(get_ptr(A), get_ptr(quant_state.delta), get_ptr(quant_state.min_val), get_ptr(out), ct.c_int(n))
     elif out.dtype == torch.float16:
-        if quant_state.quant_type == 'fp4':
-            lib.cdequantize_blockwise_fp16_fp4(get_ptr(None), get_ptr(A), get_ptr(absmax), get_ptr(out), ct.c_int(quant_state.blocksize), ct.c_int(n))
-        else:
-            lib.cdequantize_blockwise_fp16_nf4(get_ptr(None), get_ptr(A), get_ptr(absmax), get_ptr(out), ct.c_int(quant_state.blocksize), ct.c_int(n))
+        lib.cdequantize_blockwise_fp16_int4(get_ptr(A), get_ptr(quant_state.delta), get_ptr(quant_state.min_val), get_ptr(out), ct.c_int(n))
     elif out.dtype == torch.bfloat16:
-        if quant_state.quant_type == 'fp4':
-            lib.cdequantize_blockwise_bf16_fp4(get_ptr(None), get_ptr(A), get_ptr(absmax), get_ptr(out), ct.c_int(quant_state.blocksize), ct.c_int(n))
-        else:
-            lib.cdequantize_blockwise_bf16_nf4(get_ptr(None), get_ptr(A), get_ptr(absmax), get_ptr(out), ct.c_int(quant_state.blocksize), ct.c_int(n))
+        lib.cdequantize_blockwise_bf16_int4(get_ptr(A), get_ptr(quant_state.delta), get_ptr(quant_state.min_val), get_ptr(out), ct.c_int(n))
     else:
-        raise ValueError(f"Blockwise quantization only supports 16/32-bit floats, but got {A.dtype}")
+        raise ValueError(f"Dequantization only supports 16/32-bit floats, but got {out.dtype}")
+        
     post_call(A.device)
 
     is_transposed = (True if A.shape[0] == 1 else False)

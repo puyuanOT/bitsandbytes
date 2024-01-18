@@ -891,7 +891,7 @@ def quantize_4bit(A: torch.Tensor, delta: torch.Tensor = None, min_val: torch.Te
 
     if A.dtype == torch.float32:
         lib.cquantize_blockwise_fp32_int4(get_ptr(None), get_ptr(A), get_ptr(delta), get_ptr(min_val), get_ptr(out), ct.c_int32(blocksize), ct.c_int(n))
-            elif A.dtype == torch.float16:
+    elif A.dtype == torch.float16:
         lib.cquantize_blockwise_fp16_int4(get_ptr(None), get_ptr(A), get_ptr(delta), get_ptr(min_val), get_ptr(out), ct.c_int32(blocksize), ct.c_int(n))
     elif A.dtype == torch.bfloat16:
         lib.cquantize_blockwise_bf16_int4(get_ptr(None), get_ptr(A), get_ptr(delta), get_ptr(min_val), get_ptr(out), ct.c_int32(blocksize), ct.c_int(n))

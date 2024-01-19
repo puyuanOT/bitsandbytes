@@ -800,6 +800,14 @@ template void quantizeBlockwise<__nv_bfloat16, 0, General8bit>(float * code, __n
 template void quantizeBlockwise<__nv_bfloat16, 0, FP4>(float * code, __nv_bfloat16 *A, float *absmax, unsigned char *out, float* rand, int rand_offset, int blocksize, const int n);
 template void quantizeBlockwise<__nv_bfloat16, 0, NF4>(float * code, __nv_bfloat16 *A, float *absmax, unsigned char *out, float* rand, int rand_offset, int blocksize, const int n);
 
+template void quantizeBlockwiseInt4<half>(float * code, half *A, float *delta, float *min_val, unsigned char *out, float* rand, int rand_offset, int blocksize, const int n);
+template void quantizeBlockwiseInt4<float>(float * code, float *A, float *delta, float *min_val, unsigned char *out, float* rand, int rand_offset, int blocksize, const int n);
+template void quantizeBlockwiseInt4<__nv_bfloat16>(float * code, __nv_bfloat16 *A, float *delta, float *min_val, unsigned char *out, float* rand, int rand_offset, int blocksize, const int n);
+
+template void dequantizeBlockwiseInt4<float>(float *code, unsigned char *A, float *delta, float *min_val, float *out, int blocksize, const int n);
+template void dequantizeBlockwiseInt4<half>(float *code, unsigned char *A, float *delta, float *min_val, half *out, int blocksize, const int n);
+template void dequantizeBlockwiseInt4<__nv_bfloat16>(float *code, unsigned char *A, float *delta, float *min_val, __nv_bfloat16 *out, int blocksize, const int n);
+
 template void dequantizeBlockwise<float, General8bit>(float *code, unsigned char *A, float *absmax, float *out, int blocksize, const int n);
 template void dequantizeBlockwise<float, FP4>(float *code, unsigned char *A, float *absmax, float *out, int blocksize, const int n);
 template void dequantizeBlockwise<float, NF4>(float *code, unsigned char *A, float *absmax, float *out, int blocksize, const int n);

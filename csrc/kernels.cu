@@ -828,12 +828,12 @@ __global__ void kQuantizeBlockwise(float * code, T * __restrict__ const A, float
 
 
 template<typename T, int BLOCK_SIZE, int NUM_PER_TH>
-__global__ void kQuantizeBlockwiseInt4(const T * __restrict__ const A, unsigned char *out, const int n) {
+__global__ void kQuantizeBlockwiseInt4(float * code, const T * __restrict__ const A, float *delta, float *min_val, unsigned char *out, const int n) {
     const int base_idx = blockIdx.x * BLOCK_SIZE;
 
     T vals[NUM_PER_TH];
     unsigned char qvals[NUM_PER_TH / 2];
-    float min_val, max_val, delta, inv_delta;
+    float local_min_val, local_max_val, local_delta, inv_delta;
 
     typedef cub::BlockLoad<T, BLOCK_SIZE / NUM_PER_TH, NUM_PER_TH, cub::BLOCK_LOAD_WARP_TRANSPOSE> LoadT;
     typedef cub::BlockStore<unsigned char, BLOCK_SIZE / NUM_PER_TH, NUM_PER_TH / 2, cub::BLOCK_STORE_WARP_TRANSPOSE> StoreChar;
@@ -846,20 +846,20 @@ __global__ void kQuantizeBlockwiseInt4(const T * __restrict__ const A, unsigned 
         LoadT(loadt).Load(&(A[i]), vals, valid_items, (T)0.0f);
 
         // Calculate min and max
-        min_val = FLT_MAX;
-        max_val = -FLT_MAX;
+        local_min_val = FLT_MAX;
+        local_max_val = -FLT_MAX;
         for(int j = 0; j < NUM_PER_TH; j++) {
-            min_val = min(min_val, (float)vals[j]);
-            max_val = max(max_val, (float)vals[j]);
+            local_min_val = min(local_min_val, (float)vals[j]);
+            local_max_val = max(local_max_val, (float)vals[j]);
         }
 
-        delta = (max_val - min_val) / 15.0f; // 4 bits: 2^4 - 1 = 15
-        inv_delta = 1.0f / delta;
+        local_delta = (local_max_val - local_min_val) / 15.0f; // 4 bits: 2^4 - 1 = 15
+        inv_delta = 1.0f / local_delta;
 
         // Quantize
         for(int j = 0; j < NUM_PER_TH / 2; j++) {
-            float norm_val0 = ((float)vals[2 * j] - min_val) * inv_delta;
-            float norm_val1 = ((float)vals[2 * j + 1] - min_val) * inv_delta;
+            float norm_val0 = ((float)vals[2 * j] - local_min_val) * inv_delta;
+            float norm_val1 = ((float)vals[2 * j + 1] - local_min_val) * inv_delta;
 
             unsigned char qval0 = min(15, (int)(norm_val0 + 0.5f));
             unsigned char qval1 = min(15, (int)(norm_val1 + 0.5f));
@@ -868,9 +868,14 @@ __global__ void kQuantizeBlockwiseInt4(const T * __restrict__ const A, unsigned 
         }
 
         StoreChar(storec).Store(&out[i / 2], qvals, valid_items / 2);
+
+        // Write back delta and min_val for this block
+        if(threadIdx.x == 0) {
+            delta[blockIdx.x] = local_delta;
+            min_val[blockIdx.x] = local_min_val;
+        }
     }
 }
-
 
 
 template<typename T, int TILE_SIZE, int THREADS, int NUM_PER_TH, int DATA_TYPE>

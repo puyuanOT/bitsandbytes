@@ -89,6 +89,47 @@ template<typename T, int DATA_TYPE> void dequantizeBlockwise(float *code, unsign
 }
 
 
+
+template <typename T> void quantizeBlockwiseInt4(float * code, T *A, float *delta, float *min_val, unsigned char *out, float* rand, int rand_offset, int blocksize, const int n);
+{
+  int num_blocks = n/blocksize;
+  num_blocks = n % blocksize == 0 ? num_blocks : num_blocks + 1;
+
+  if(blocksize == 4096)
+    kQuantizeBlockwiseInt4<T, 4096, 4><<<num_blocks, 1024>>>(code, A, delta, min_val, out, n);
+  else if(blocksize == 2048)
+    kQuantizeBlockwiseInt4<T, 2048, 4><<<num_blocks, 512>>>(code, A, delta, min_val, out, n);
+  else if(blocksize == 1024)
+    kQuantizeBlockwiseInt4<T, 1024, 4><<<num_blocks, 256>>>(code, A, delta, min_val, out, n);
+  else if(blocksize == 512)
+    kQuantizeBlockwiseInt4<T, 512, 2><<<num_blocks, 256>>>(code, A, delta, min_val, out, n);
+  else if(blocksize == 256)
+    kQuantizeBlockwiseInt4<T, 256, 2><<<num_blocks, 128>>>(code, A, delta, min_val, out, n);
+  else if(blocksize == 128)
+    kQuantizeBlockwiseInt4<T, 128, 2><<<num_blocks, 64>>>(code, A, delta, min_val, out, n);
+  else if(blocksize == 64)
+    kQuantizeBlockwiseInt4<T, 64, 2><<<num_blocks, 32>>>(code, A, delta, min_val, out, n);
+
+
+  CUDA_CHECK_RETURN(cudaPeekAtLastError());
+}
+
+template<typename T> void dequantizeBlockwiseInt4(float *code, unsigned char *A, float *delta, float *min_val, T *out, int blocksize, const int n)
+{
+  int num_blocks = n/blocksize;
+  num_blocks = n % blocksize == 0 ? num_blocks : num_blocks + 1;
+  int tile_size = (DATA_TYPE > 0) ? 1024 : 512;
+
+  if(DATA_TYPE > 0)
+    kDequantizeBlockwiseInt4<T, 512, 64, 8><<<(n+tile_size-1)/tile_size, 64>>>(code, A, delta, min_val, out, blocksize/2, n);
+  else
+    kDequantizeBlockwiseInt4<T, 512, 64, 8><<<(n+tile_size-1)/tile_size, 64>>>(code, A, delta, min_val, out, blocksize, n);
+
+  CUDA_CHECK_RETURN(cudaPeekAtLastError());
+}
+
+
+
 //void matmul4bite(half *A, unsigned char *B, half*out, int lda, int ldb, int rowsA, int colsA, int colsB)
 //{
 //	int num_blocks = (colsB+32-1)/32;

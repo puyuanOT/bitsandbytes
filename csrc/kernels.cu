@@ -826,6 +826,53 @@ __global__ void kQuantizeBlockwise(float * code, T * __restrict__ const A, float
   }
 }
 
+
+template<typename T, int BLOCK_SIZE, int NUM_PER_TH>
+__global__ void kQuantizeBlockwiseInt4(const T * __restrict__ const A, unsigned char *out, const int n) {
+    const int base_idx = blockIdx.x * BLOCK_SIZE;
+
+    T vals[NUM_PER_TH];
+    unsigned char qvals[NUM_PER_TH / 2];
+    float min_val, max_val, delta, inv_delta;
+
+    typedef cub::BlockLoad<T, BLOCK_SIZE / NUM_PER_TH, NUM_PER_TH, cub::BLOCK_LOAD_WARP_TRANSPOSE> LoadT;
+    typedef cub::BlockStore<unsigned char, BLOCK_SIZE / NUM_PER_TH, NUM_PER_TH / 2, cub::BLOCK_STORE_WARP_TRANSPOSE> StoreChar;
+
+    __shared__ typename LoadT::TempStorage loadt;
+    __shared__ typename StoreChar::TempStorage storec;
+
+    for (unsigned int i = base_idx; i < n; i += gridDim.x * BLOCK_SIZE) {
+        int valid_items = min(n - i, BLOCK_SIZE);
+        LoadT(loadt).Load(&(A[i]), vals, valid_items, (T)0.0f);
+
+        // Calculate min and max
+        min_val = FLT_MAX;
+        max_val = -FLT_MAX;
+        for(int j = 0; j < NUM_PER_TH; j++) {
+            min_val = min(min_val, (float)vals[j]);
+            max_val = max(max_val, (float)vals[j]);
+        }
+
+        delta = (max_val - min_val) / 15.0f; // 4 bits: 2^4 - 1 = 15
+        inv_delta = 1.0f / delta;
+
+        // Quantize
+        for(int j = 0; j < NUM_PER_TH / 2; j++) {
+            float norm_val0 = ((float)vals[2 * j] - min_val) * inv_delta;
+            float norm_val1 = ((float)vals[2 * j + 1] - min_val) * inv_delta;
+
+            unsigned char qval0 = min(15, (int)(norm_val0 + 0.5f));
+            unsigned char qval1 = min(15, (int)(norm_val1 + 0.5f));
+
+            qvals[j] = (qval1 << 4) | qval0;
+        }
+
+        StoreChar(storec).Store(&out[i / 2], qvals, valid_items / 2);
+    }
+}
+
+
+
 template<typename T, int TILE_SIZE, int THREADS, int NUM_PER_TH, int DATA_TYPE>
 __global__ void kDequantizeBlockwise(float *code, unsigned char * A, float * absmax, T *out, const int blocksize, const int n)
 {
@@ -892,6 +939,49 @@ __global__ void kDequantizeBlockwise(float *code, unsigned char * A, float * abs
     StoreT(storet).Store(&(out[(DATA_TYPE > 0) ? i*2 : i]), vals, valid_items_store);
   }
 }
+
+
+
+template<typename T, int TILE_SIZE, int THREADS, int NUM_PER_TH>
+__global__ void kDequantizeBlockwiseInt4(unsigned char * A, float * delta, float * min_val, T *out, const int n) {
+    const int base_idx = blockIdx.x * TILE_SIZE;
+
+    T vals[NUM_PER_TH * 2]; // 2 values per byte
+    unsigned char qvals[NUM_PER_TH];
+    float local_delta, local_min;
+
+    typedef cub::BlockLoad<unsigned char, THREADS, NUM_PER_TH, cub::BLOCK_LOAD_WARP_TRANSPOSE> LoadChar;
+    typedef cub::BlockStore<T, THREADS, NUM_PER_TH * 2, cub::BLOCK_STORE_WARP_TRANSPOSE> StoreT;
+
+    __shared__ typename LoadChar::TempStorage loadchar;
+    __shared__ typename StoreT::TempStorage storet;
+
+    for (unsigned int i = base_idx; i < n; i += gridDim.x * TILE_SIZE) {
+        int valid_items_load = (n + 1) / 2 - i > TILE_SIZE ? TILE_SIZE : (n + 1) / 2 - i;
+        int valid_items_store = n - i * 2 > TILE_SIZE * 2 ? TILE_SIZE * 2 : n - i * 2;
+
+        local_delta = __ldg(&delta[i / TILE_SIZE]);
+        local_min = __ldg(&min_val[i / TILE_SIZE]);
+
+        __syncthreads();
+        LoadChar(loadchar).Load(&(A[i]), qvals, valid_items_load, 128);
+
+        // Dequantize
+        #pragma unroll NUM_PER_TH
+        for(int j = 0; j < NUM_PER_TH; j++) {
+            int val0 = qvals[j] & 0x0F; // Extract lower 4 bits
+            int val1 = qvals[j] >> 4;   // Extract upper 4 bits
+
+            vals[j * 2] = val0 * local_delta + local_min;
+            vals[j * 2 + 1] = val1 * local_delta + local_min;
+        }
+
+        __syncthreads();
+        StoreT(storet).Store(&(out[i * 2]), vals, valid_items_store);
+    }
+}
+
+
 
 __global__ void kDequantize(float *code, unsigned char *A, float *out, const int n)
 {
@@ -3964,6 +4054,35 @@ template __global__ void kPercentileClipping<half, 2048, 4>(half * __restrict__ 
 #define MAKE_kQuantizeBlockwise(dtype, blocksize, num_per_thread, stochastic, data_type_name) \
 template __global__ void kQuantizeBlockwise<dtype, blocksize, num_per_thread, stochastic, data_type_name>(float * code, dtype * __restrict__ const A, float *absmax, unsigned char *out, float * __restrict__ const rand, const int rand_offset, const int n); \
 
+#define MAKE_kQuantizeBlockwiseInt4(dtype, blocksize, num_per_thread) \
+template __global__ void kQuantizeBlockwiseInt4<dtype, blocksize, num_per_thread>(const dtype * __restrict__ const A, unsigned char *out, const int n);
+
+
+MAKE_kQuantizeBlockwiseInt4(half,  4096, 4)
+MAKE_kQuantizeBlockwiseInt4(half,  2048, 4)
+MAKE_kQuantizeBlockwiseInt4(half,  1024, 4)
+MAKE_kQuantizeBlockwiseInt4(half,   512, 2)
+MAKE_kQuantizeBlockwiseInt4(half,   256, 2)
+MAKE_kQuantizeBlockwiseInt4(half,   128, 2)
+MAKE_kQuantizeBlockwiseInt4(half,    64, 2)
+
+MAKE_kQuantizeBlockwiseInt4(float, 4096, 4)
+MAKE_kQuantizeBlockwiseInt4(float, 2048, 4)
+MAKE_kQuantizeBlockwiseInt4(float, 1024, 4)
+MAKE_kQuantizeBlockwiseInt4(float,  512, 2)
+MAKE_kQuantizeBlockwiseInt4(float,  256, 2)
+MAKE_kQuantizeBlockwiseInt4(float,  128, 2)
+MAKE_kQuantizeBlockwiseInt4(float,   64, 2)
+
+MAKE_kQuantizeBlockwiseInt4(__nv_bfloat16, 4096, 4)
+MAKE_kQuantizeBlockwiseInt4(__nv_bfloat16, 2048, 4)
+MAKE_kQuantizeBlockwiseInt4(__nv_bfloat16, 1024, 4)
+MAKE_kQuantizeBlockwiseInt4(__nv_bfloat16,  512, 2)
+MAKE_kQuantizeBlockwiseInt4(__nv_bfloat16,  256, 2)
+MAKE_kQuantizeBlockwiseInt4(__nv_bfloat16,  128, 2)
+MAKE_kQuantizeBlockwiseInt4(__nv_bfloat16,   64, 2)
+
+
 MAKE_kQuantizeBlockwise(half,  4096, 4, 0, General8bit)
 MAKE_kQuantizeBlockwise(half,  4096, 4, 1, General8bit)
 MAKE_kQuantizeBlockwise(half,  2048, 4, 0, General8bit)
@@ -4041,6 +4160,11 @@ template __global__ void kDequantizeBlockwise<float, 512, 64, 8, NF4>(float *cod
 template __global__ void kDequantizeBlockwise<__nv_bfloat16, 512, 64, 8, FP4>(float *code, unsigned char * A, float * absmax, __nv_bfloat16 *out, const int blocksize, const int n);
 template __global__ void kDequantizeBlockwise<__nv_bfloat16, 512, 64, 8, General8bit>(float *code, unsigned char * A, float * absmax, __nv_bfloat16 *out, const int blocksize, const int n);
 template __global__ void kDequantizeBlockwise<__nv_bfloat16, 512, 64, 8, NF4>(float *code, unsigned char * A, float * absmax, __nv_bfloat16 *out, const int blocksize, const int n);
+
+template __global__ void kDequantizeBlockwiseInt4<half, 512, 64, 8>(float *code, unsigned char * A, float * delta, float * min_val, half *out, const int blocksize, const int n);
+template __global__ void kDequantizeBlockwiseInt4<float, 512, 64, 8>(float *code, unsigned char * A, float * delta, float * min_val, float *out, const int blocksize, const int n);
+template __global__ void kDequantizeBlockwiseInt4<__nv_bfloat16, 512, 64, 8>(float *code, unsigned char * A, float * delta, float * min_val, __nv_bfloat16 *out, const int blocksize, const int n);
+
 
 #define MAKE_OptimizerStatic8bit2StateBlockwise(oname, gtype, block_size, num_per_thread) \
 template __global__ void kOptimizerStatic8bit2StateBlockwise<gtype, oname, block_size, num_per_thread>(gtype* p, gtype* __restrict__ const g, unsigned char* state1, unsigned char* state2, \

@@ -971,8 +971,8 @@ __global__ void kDequantizeBlockwiseInt4(float *code, unsigned char *A, float *d
     for (unsigned int i = base_idx; i < grid_size; i += grid_size) {
         if (i >= n) break;
 
-        valid_items_load = (n+1)/2 - i > TILE_SIZE ? TILE_SIZE : (n+1)/2 - i;
-        valid_items_store = n - i*2 > TILE_SIZE*2 ? TILE_SIZE*2 : n - i*2;
+        int valid_items_load = (n+1)/2 - i > TILE_SIZE ? TILE_SIZE : (n+1)/2 - i;
+        int valid_items_store = n - i*2 > TILE_SIZE*2 ? TILE_SIZE*2 : n - i*2;
 
         if ((n + 1) / 2 <= i + TILE_SIZE) {
             valid_items_load = (n + 1) / 2 - i;

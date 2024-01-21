@@ -837,9 +837,11 @@ __global__ void kQuantizeBlockwiseInt4(float * code, T * __restrict__ const A, f
 
     typedef cub::BlockLoad<T, BLOCK_SIZE / NUM_PER_TH, NUM_PER_TH, cub::BLOCK_LOAD_WARP_TRANSPOSE> LoadT;
     typedef cub::BlockStore<unsigned char, BLOCK_SIZE / NUM_PER_TH, NUM_PER_TH / 2, cub::BLOCK_STORE_WARP_TRANSPOSE> StoreChar;
+    typedef cub::BlockReduce<float, BLOCK_SIZE/NUM_PER_TH> BlockReduce;
 
     __shared__ typename LoadT::TempStorage loadt;
     __shared__ typename StoreChar::TempStorage storec;
+    __shared__ typename BlockReduce::TempStorage reduce_min, reduce_max;
 
     for (unsigned int i = base_idx; i < n; i += gridDim.x * BLOCK_SIZE) {
         int valid_items = min(n - i, BLOCK_SIZE);
@@ -852,6 +854,11 @@ __global__ void kQuantizeBlockwiseInt4(float * code, T * __restrict__ const A, f
             local_min_val = min(local_min_val, (float)vals[j]);
             local_max_val = max(local_max_val, (float)vals[j]);
         }
+
+        local_min_val = BlockReduce(reduce_min).Reduce(local_min_val, cub::Min(), valid_items);
+        local_max_val = BlockReduce(reduce_max).Reduce(local_max_val, cub::Max(), valid_items);
+
+        __syncthreads();
 
         local_delta = (local_max_val - local_min_val) / 15.0f; // 4 bits: 2^4 - 1 = 15
         inv_delta = 1.0f / local_delta;

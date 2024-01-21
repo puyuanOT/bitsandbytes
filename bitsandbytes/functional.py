@@ -570,8 +570,8 @@ def estimate_quantiles(A: Tensor, out: Tensor = None, offset: float = 1 / 512, n
 class QuantState:
     """Container for quantization state components to work with Params4bit and similar classes"""
     def __init__(self, delta, min_val, shape=None, code=None, blocksize=None, quant_type=None, dtype=None):
-        self.delta = delta
-        self.min_val = min_val
+        self.delta = delta.half().float()  # Ensure the quantization statistics to have the same dtype as llama cpp
+        self.min_val = min_val.half().float()
         self.shape = shape
         self.code = code
         self.dtype = dtype
@@ -586,47 +586,45 @@ class QuantState:
         """
         list_repr = [self.delta, self.min_val, self.shape, self.dtype, self.blocksize, None, self.quant_type]
         return list_repr[idx]
-    
+
     @classmethod
     def from_dict(cls, qs_dict: Dict[str, Any], device: torch.device) -> 'QuantState':
         """
         Unpacks components of state_dict into QuantState.
         Converts necessary items to appropriate types.
         """
-        raise NotImplementedError
-        # qs_dict = {k.split('.')[-1]: v for k, v in qs_dict.items()}  # strip prefixes
+        qs_dict = {k.split('.')[-1]: v for k, v in qs_dict.items()}  # strip prefixes
 
-        # state2 = cls.from_dict(qs_dict['state2'], device) if 'state2' in qs_dict else None
-
-        # return cls(
-        #     delta=qs_dict['delta'].to(device),
-        #     min_val=qs_dict['min_val'].to(device),
-        #     shape=torch.Size(qs_dict['shape']) if qs_dict['shape'] is not None else None,
-        #     dtype=getattr(torch, qs_dict['dtype']),
-        #     blocksize=int(qs_dict['blocksize']),
-        #     quant_type=qs_dict['quant_type'],
-        #     state2=state2
-        # )
+        return cls(
+            delta=qs_dict['delta'].to(device),
+            min_val=qs_dict['min_val'].to(device),
+            shape=torch.Size(qs_dict['shape']) if qs_dict['shape'] is not None else None,
+            dtype=getattr(torch, qs_dict['dtype']),
+            blocksize=int(qs_dict['blocksize']),
+            quant_type=qs_dict['quant_type'],
+        )
 
     def as_dict(self, packed=False):
         """
         Returns dict of tensors and strings to use in serialization via _save_to_state_dict()
         """
-        raise NotImplementedError
-        
-        # qs_dict = {
-        #     'delta': self.delta,
-        #     'min_val': self.min_val,
-        #     'shape': tuple(self.shape),
-        #     'dtype': str(self.dtype).strip('torch.'),
-        #     'blocksize': self.blocksize,
-        #     'quant_type': self.quant_type
-        # }
+        qs_dict = {
+            'delta': self.delta,
+            'min_val': self.min_val,
+            'shape': tuple(self.shape) if self.shape is not None else None,
+            'dtype': str(self.dtype).strip('torch.') if self.dtype is not None else None,
+            'blocksize': self.blocksize,
+            'quant_type': self.quant_type
+        }
 
-        # if self.nested:
-        #     qs_dict['state2'] = self.state2.as_dict(packed)
+        if not packed:
+            return qs_dict
 
-        # return qs_dict
+        # packed format allows serialization of non-tensor components, critical for saving in safetensors format
+        qs_packed_dict = {k: v for k, v in qs_dict.items() if isinstance(v, torch.Tensor)}
+        non_tensor_dict = {k: v for k, v in qs_dict.items() if not isinstance(v, torch.Tensor)}
+        qs_packed_dict["quant_state." + "bitsandbytes__" + self.quant_type] = pack_dict_to_tensor(non_tensor_dict)
+        return qs_packed_dict
 
     def to(self, device):
         """
@@ -634,6 +632,7 @@ class QuantState:
         """
         self.delta = self.delta.to(device)
         self.min_val = self.min_val.to(device)
+        return self
 
 
 def quantize_blockwise(A: Tensor, code: Tensor = None, absmax: Tensor = None, out: Tensor = None, blocksize=4096, nested=False) -> Tensor:

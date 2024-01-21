@@ -118,9 +118,9 @@ void dequantizeBlockwiseInt4(float *code, unsigned char *A, float *delta, float 
 {
     int num_blocks = n / blocksize;
     num_blocks = n % blocksize == 0 ? num_blocks : num_blocks + 1;
-    int tile_size = 512;
+    int tile_size = 1024;
 
-    kDequantizeBlockwiseInt4<T, 512, 64, 8><<<(n+tile_size-1)/tile_size, 64>>>(code, A, delta, min_val, out, blocksize, n);
+    kDequantizeBlockwiseInt4<T, 512, 64, 8><<<(n+tile_size-1)/tile_size, 64>>>(code, A, delta, min_val, out, blocksize/2, n);
 
     CUDA_CHECK_RETURN(cudaPeekAtLastError());
 }

@@ -1511,10 +1511,8 @@ def gemv_4bit(
 
     Bshape = state.shape
     bout = Bshape[0]
-    absmax = state.absmax
-    if state.nested:
-        absmax = dequantize_blockwise(state.absmax, state.state2)
-        absmax += state.offset
+    delta = state.delta
+    min_val = state.min_val
 
     if out is None:
         if len(A.shape) == 3:
@@ -1528,7 +1526,7 @@ def gemv_4bit(
     lda = Bshape[0]
     ldc = Bshape[0]
     ldb = (A.shape[-1]+1)//2
-    is_on_gpu([B, A, out, absmax, state.code])
+    is_on_gpu([B, A, out, delta, min_val, state.code])
     m = ct.c_int32(m)
     n = ct.c_int32(n)
     k = ct.c_int32(k)
@@ -1538,11 +1536,11 @@ def gemv_4bit(
 
     if B.dtype in [torch.uint8, torch.bfloat16, torch.float16, torch.float32]:
         if A.dtype == torch.float16:
-            lib.cgemm_4bit_inference_naive_fp16(m, n, k, get_ptr(A), get_ptr(B), get_ptr(absmax), get_ptr(state.code), get_ptr(out), lda, ldb, ldc, ct.c_int32(state.blocksize))
+            lib.cgemm_4bit_inference_naive_fp16(m, n, k, get_ptr(A), get_ptr(B), get_ptr(delta), get_ptr(min_val), get_ptr(state.code), get_ptr(out), lda, ldb, ldc, ct.c_int32(state.blocksize))
         elif A.dtype == torch.bfloat16:
-            lib.cgemm_4bit_inference_naive_bf16(m, n, k, get_ptr(A), get_ptr(B), get_ptr(absmax), get_ptr(state.code), get_ptr(out), lda, ldb, ldc, ct.c_int32(state.blocksize))
+            lib.cgemm_4bit_inference_naive_bf16(m, n, k, get_ptr(A), get_ptr(B), get_ptr(delta), get_ptr(min_val), get_ptr(state.code), get_ptr(out), lda, ldb, ldc, ct.c_int32(state.blocksize))
         elif A.dtype == torch.float32:
-            lib.cgemm_4bit_inference_naive_fp32(m, n, k, get_ptr(A), get_ptr(B), get_ptr(absmax), get_ptr(state.code), get_ptr(out), lda, ldb, ldc, ct.c_int32(state.blocksize))
+            lib.cgemm_4bit_inference_naive_fp32(m, n, k, get_ptr(A), get_ptr(B), get_ptr(delta), get_ptr(min_val), get_ptr(state.code), get_ptr(out), lda, ldb, ldc, ct.c_int32(state.blocksize))
         else:
             raise NotImplementedError(f'Matmul not implemented for data type {A.dtype}')
 

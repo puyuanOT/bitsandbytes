@@ -3637,7 +3637,7 @@ template <typename T, int THREADS> __global__ void kgemm_4bit_inference(int M, i
 }
 
 #define num_values_4bit 32
-template <typename T, int THREADS, int BITS> __global__ void kgemm_4bit_inference_naive(int M, int N, int K, T * __restrict__ const A, unsigned char *B,  float *absmax, const float *datatype, T * out,  int lda, int ldb, int ldc, int blocksize)
+template <typename T, int THREADS, int BITS> __global__ void kgemm_4bit_inference_naive(int M, int N, int K, T * __restrict__ const A, unsigned char *B,  float *delta, float *min_val, const float *datatype, T * out,  int lda, int ldb, int ldc, int blocksize)
 {
 
   // per threadblock: 
@@ -3657,7 +3657,8 @@ template <typename T, int THREADS, int BITS> __global__ void kgemm_4bit_inferenc
   T local_B[num_values_4bit/4];
   T local_A[num_values_4bit/4];
   __shared__ T quant_map[16];
-	T local_absmax = T(0.0f);
+	T local_delta = T(0.0f);
+	T local_min = T(0.0f);
 
   for(int i = threadIdx.x; i < 16; i++)
     quant_map[i] = T(datatype[i]);
@@ -3670,7 +3671,8 @@ template <typename T, int THREADS, int BITS> __global__ void kgemm_4bit_inferenc
     int inner_idx_halved = inner_idx/2;
     int offset_B = ldb*row_B;
     int absidx = ((2*offset_B)+inner_idx)/blocksize;
-	  local_absmax = __ldg(&(absmax[absidx]));
+	local_delta = __ldg(&(delta[absidx]));
+	local_min = __ldg(&(min_val[absidx]));
 
     if(row_B < M)
     {
@@ -3702,12 +3704,12 @@ template <typename T, int THREADS, int BITS> __global__ void kgemm_4bit_inferenc
       for(int k = 0; k < num_values_8bit/4; k++)
       {
         #if __CUDA_ARCH__ >= 800
-          local_B[k*2] = quant_map[local_B_4bit[(i*num_values_8bit/4) + k] >> 4]*local_absmax;
-          local_B[k*2 + 1] = quant_map[local_B_4bit[(i*num_values_8bit/4) + k] & 0x0F]*local_absmax;
+            local_B[k*2] = (quant_map[local_B_4bit[(i*num_values_8bit/4) + k] >> 4] * local_delta) + local_min;
+            local_B[k*2 + 1] = (quant_map[local_B_4bit[(i*num_values_8bit/4) + k] & 0x0F] * local_delta) + local_min;
         #else
-          // bf16 multipliation not supported
-          local_B[k*2] = T((float)quant_map[local_B_4bit[(i*num_values_8bit/4) + k] >> 4]*(float)local_absmax);
-          local_B[k*2 + 1] = T((float)quant_map[local_B_4bit[(i*num_values_8bit/4) + k] & 0x0F]*(float)local_absmax);
+            // bf16 multiplication not supported
+            local_B[k*2] = T((float)quant_map[local_B_4bit[(i*num_values_8bit/4) + k] >> 4]*(float)local_delta + (float)local_min);
+            local_B[k*2 + 1] = T((float)quant_map[local_B_4bit[(i*num_values_8bit/4) + k] & 0x0F]*(float)local_delta + (float)local_min);
         #endif
       }
 
@@ -3918,14 +3920,14 @@ template __global__ void gemm_device<half, 16, 32>(int M, int N, int K, half * _
 template __global__ void gemm_device<half, 16, 64>(int M, int N, int K, half * __restrict__ const A,  half* B,  half * out,  int lda, int ldb, int ldc);
 template __global__ void gemm_device<half, 16, 96>(int M, int N, int K, half * __restrict__ const A,  half* B,  half * out,  int lda, int ldb, int ldc);
 
-template __global__ void kgemm_4bit_inference<half, 96>(int M, int N, int K, half * __restrict__ const A, unsigned char *B,  float *absmax, half * out,  int lda, int ldb, int ldc, int blocksize);
+template __global__ void kgemm_4bit_inference<half, 96>(int M, int N, int K, half * __restrict__ const A, unsigned char *B,  float *delta, half * out,  int lda, int ldb, int ldc, int blocksize);
 template __global__ void kgemm_4bit_inference<half, 128>(int M, int N, int K, half * __restrict__ const A, unsigned char *B,  float *absmax, half * out,  int lda, int ldb, int ldc, int blocksize);
 template __global__ void kgemm_4bit_inference<half, 160>(int M, int N, int K, half * __restrict__ const A, unsigned char *B,  float *absmax, half * out,  int lda, int ldb, int ldc, int blocksize);
 template __global__ void kgemm_4bit_inference<half, 256>(int M, int N, int K, half * __restrict__ const A, unsigned char *B,  float *absmax, half * out,  int lda, int ldb, int ldc, int blocksize);
 
-template __global__ void kgemm_4bit_inference_naive<half, 128, 16>(int M, int N, int K, half * __restrict__ const A, unsigned char *B,  float *absmax, const float *datatype, half * out,  int lda, int ldb, int ldc, int blocksize);
-template __global__ void kgemm_4bit_inference_naive<__nv_bfloat16, 128, 16>(int M, int N, int K, __nv_bfloat16 * __restrict__ const A, unsigned char *B,  float *absmax, const float *datatype, __nv_bfloat16 * out,  int lda, int ldb, int ldc, int blocksize);
-template __global__ void kgemm_4bit_inference_naive<float, 128, 32>(int M, int N, int K, float * __restrict__ const A, unsigned char *B,  float *absmax, const float *datatype, float * out,  int lda, int ldb, int ldc, int blocksize);
+template __global__ void kgemm_4bit_inference_naive<half, 128, 16>(int M, int N, int K, half * __restrict__ const A, unsigned char *B,  float *delta, float *min_val,  const float *datatype, half * out,  int lda, int ldb, int ldc, int blocksize);
+template __global__ void kgemm_4bit_inference_naive<__nv_bfloat16, 128, 16>(int M, int N, int K, __nv_bfloat16 * __restrict__ const A, unsigned char *B,  float *delta, float *min_val, const float *datatype, __nv_bfloat16 * out,  int lda, int ldb, int ldc, int blocksize);
+template __global__ void kgemm_4bit_inference_naive<float, 128, 32>(int M, int N, int K, float * __restrict__ const A, unsigned char *B,  float *delta, float *min_val, const float *datatype, float * out,  int lda, int ldb, int ldc, int blocksize);
 
 template __global__ void kExtractOutliers<COL_TURING>(char *A, int *idx, char *out, int idx_size, int rowsA, int colsA, int tiledRowsA, int tiledColsA);
 template __global__ void kExtractOutliers<COL_AMPERE>(char *A, int *idx, char *out, int idx_size, int rowsA, int colsA, int tiledRowsA, int tiledColsA);

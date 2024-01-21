@@ -954,7 +954,8 @@ __global__ void kDequantizeBlockwise(float *code, unsigned char * A, float * abs
 
 
 template<typename T, int TILE_SIZE, int THREADS, int NUM_PER_TH>
-__global__ void kDequantizeBlockwiseInt4(float *code, unsigned char * A, float * delta, float * min_val, T *out, const int blocksize, const int n) {
+__global__ void kDequantizeBlockwiseInt4(float *code, unsigned char *A, float *delta, float *min_val, T *out, const int blocksize, const int n) {
+    const int grid_size = gridDim.x * TILE_SIZE;
     const int base_idx = blockIdx.x * TILE_SIZE;
 
     T vals[NUM_PER_TH * 2]; // 2 values per byte
@@ -967,12 +968,19 @@ __global__ void kDequantizeBlockwiseInt4(float *code, unsigned char * A, float *
     __shared__ typename LoadChar::TempStorage loadchar;
     __shared__ typename StoreT::TempStorage storet;
 
-    for (unsigned int i = base_idx; i < n; i += gridDim.x * TILE_SIZE) {
-        int valid_items_load = (n + 1) / 2 - i > TILE_SIZE ? TILE_SIZE : (n + 1) / 2 - i;
-        int valid_items_store = n - i * 2 > TILE_SIZE * 2 ? TILE_SIZE * 2 : n - i * 2;
+    for (unsigned int i = base_idx; i < grid_size; i += grid_size) {
+        if (i >= n) break;
 
-        local_delta = __ldg(&delta[i / TILE_SIZE]);
-        local_min = __ldg(&min_val[i / TILE_SIZE]);
+        valid_items_load = (n+1)/2 - i > TILE_SIZE ? TILE_SIZE : (n+1)/2 - i;
+        valid_items_store = n - i*2 > TILE_SIZE*2 ? TILE_SIZE*2 : n - i*2;
+
+        if ((n + 1) / 2 <= i + TILE_SIZE) {
+            valid_items_load = (n + 1) / 2 - i;
+            valid_items_store = n - i * 2;
+        }
+
+        local_delta = __ldg(&delta[(i+threadIdx.x*NUM_PER_TH)/(blocksize)]);
+        local_min = __ldg(&min_val[(i+threadIdx.x*NUM_PER_TH)/(blocksize)]);
 
         __syncthreads();
         LoadChar(loadchar).Load(&(A[i]), qvals, valid_items_load, 128);

@@ -127,17 +127,17 @@ void quantizeBlockwise_fp32_fp4(float * code, float *A, float *absmax, unsigned 
 void quantizeBlockwise_fp32_nf4(float * code, float *A, float *absmax, unsigned char *out, int blocksize, const int n){ quantizeBlockwise<float, 0, NF4>(NULL, A, absmax, out, NULL, 0, blocksize, n); }
 
 void dequantizeBlockwise_fp16(float *code, unsigned char *A, float *absmax, half *out, int blocksize, const int n){ dequantizeBlockwise<half, General8bit>(code, A, absmax, out, blocksize, n); } \
-void dequantizeBlockwiseInt4_fp16(float *code, unsigned char *A, float *absmax, half *out, int blocksize, const int n){ dequantizeBlockwiseInt4<half>(code, A, delta, min_val, out, blocksize, n); } \
+void dequantizeBlockwiseInt4_fp16(float *code, unsigned char *A, float *delta, float *min_val, half *out, int blocksize, const int n){ dequantizeBlockwiseInt4<half>(code, A, delta, min_val, out, blocksize, n); } \
 void dequantizeBlockwise_fp16_fp4(float *code, unsigned char *A, float *absmax, half *out, int blocksize, const int n){ dequantizeBlockwise<half, FP4>(NULL, A, absmax, out, blocksize, n); } \
 void dequantizeBlockwise_fp16_nf4(float *code, unsigned char *A, float *absmax, half *out, int blocksize, const int n){ dequantizeBlockwise<half, NF4>(NULL, A, absmax, out, blocksize, n); } \
 
 void dequantizeBlockwise_fp32(float *code, unsigned char *A, float *absmax, float *out, int blocksize, const int n){ dequantizeBlockwise<float, General8bit>(code, A, absmax, out, blocksize, n); }
-void dequantizeBlockwiseInt4_fp32(float *code, unsigned char *A, float *absmax, float *out, int blocksize, const int n){ dequantizeBlockwiseInt4<float>(code, A, delta, min_val, out, blocksize, n); } \
+void dequantizeBlockwiseInt4_fp32(float *code, unsigned char *A, float *delta, float *min_val, float *out, int blocksize, const int n){ dequantizeBlockwiseInt4<float>(code, A, delta, min_val, out, blocksize, n); } \
 void dequantizeBlockwise_fp32_fp4(float *code, unsigned char *A, float *absmax, float *out, int blocksize, const int n){ dequantizeBlockwise<float, FP4>(NULL, A, absmax, out, blocksize, n); }
 void dequantizeBlockwise_fp32_nf4(float *code, unsigned char *A, float *absmax, float *out, int blocksize, const int n){ dequantizeBlockwise<float, NF4>(NULL, A, absmax, out, blocksize, n); }
 
 void dequantizeBlockwise_bf16(float *code, unsigned char *A, float *absmax, __nv_bfloat16 *out, int blocksize, const int n){ dequantizeBlockwise<__nv_bfloat16, General8bit>(code, A, absmax, out, blocksize, n); }
-void dequantizeBlockwiseInt4_fp32(float *code, unsigned char *A, float *absmax, __nv_bfloat16 *out, int blocksize, const int n){ dequantizeBlockwiseInt4<__nv_bfloat16>(code, A, delta, min_val, out, blocksize, n); } \
+void dequantizeBlockwiseInt4_bf16(float *code, unsigned char *A, float *delta, float *min_val, __nv_bfloat16 *out, int blocksize, const int n){ dequantizeBlockwiseInt4<__nv_bfloat16>(code, A, delta, min_val, out, blocksize, n); } \
 void dequantizeBlockwise_bf16_fp4(float *code, unsigned char *A, float *absmax, __nv_bfloat16 *out, int blocksize, const int n){ dequantizeBlockwise<__nv_bfloat16, FP4>(NULL, A, absmax, out, blocksize, n); }
 void dequantizeBlockwise_bf16_nf4(float *code, unsigned char *A, float *absmax, __nv_bfloat16 *out, int blocksize, const int n){ dequantizeBlockwise<__nv_bfloat16, NF4>(NULL, A, absmax, out, blocksize, n); }
 

@@ -89,8 +89,7 @@ template<typename T, int DATA_TYPE> void dequantizeBlockwise(float *code, unsign
 }
 
 
-
-template <typename T> void quantizeBlockwiseInt4(float * code, T *A, float *delta, float *min_val, unsigned char *out, float* rand, int rand_offset, int blocksize, const int n);
+template <typename T> void quantizeBlockwiseInt4(float * code, T *A, float *delta, float *min_val, unsigned char *out, float* rand, int rand_offset, int blocksize, const int n)
 {
   int num_blocks = n/blocksize;
   num_blocks = n % blocksize == 0 ? num_blocks : num_blocks + 1;
@@ -114,18 +113,16 @@ template <typename T> void quantizeBlockwiseInt4(float * code, T *A, float *delt
   CUDA_CHECK_RETURN(cudaPeekAtLastError());
 }
 
-template<typename T> void dequantizeBlockwiseInt4(float *code, unsigned char *A, float *delta, float *min_val, T *out, int blocksize, const int n)
+template<typename T>
+void dequantizeBlockwiseInt4(float *code, unsigned char *A, float *delta, float *min_val, T *out, int blocksize, const int n)
 {
-  int num_blocks = n/blocksize;
-  num_blocks = n % blocksize == 0 ? num_blocks : num_blocks + 1;
-  int tile_size = (DATA_TYPE > 0) ? 1024 : 512;
+    int num_blocks = n / blocksize;
+    num_blocks = n % blocksize == 0 ? num_blocks : num_blocks + 1;
+    int tile_size = 512;
 
-  if(DATA_TYPE > 0)
-    kDequantizeBlockwiseInt4<T, 512, 64, 8><<<(n+tile_size-1)/tile_size, 64>>>(code, A, delta, min_val, out, blocksize/2, n);
-  else
     kDequantizeBlockwiseInt4<T, 512, 64, 8><<<(n+tile_size-1)/tile_size, 64>>>(code, A, delta, min_val, out, blocksize, n);
 
-  CUDA_CHECK_RETURN(cudaPeekAtLastError());
+    CUDA_CHECK_RETURN(cudaPeekAtLastError());
 }
 
 

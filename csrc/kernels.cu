@@ -828,7 +828,7 @@ __global__ void kQuantizeBlockwise(float * code, T * __restrict__ const A, float
 
 
 template<typename T, int BLOCK_SIZE, int NUM_PER_TH>
-__global__ void kQuantizeBlockwiseInt4(float * code, const T * __restrict__ const A, float *delta, float *min_val, unsigned char *out, const int n) {
+__global__ void kQuantizeBlockwiseInt4(float * code, T * __restrict__ const A, float *delta, float *min_val, unsigned char *out, const int n) {
     const int base_idx = blockIdx.x * BLOCK_SIZE;
 
     T vals[NUM_PER_TH];
@@ -946,9 +946,8 @@ __global__ void kDequantizeBlockwise(float *code, unsigned char * A, float * abs
 }
 
 
-
 template<typename T, int TILE_SIZE, int THREADS, int NUM_PER_TH>
-__global__ void kDequantizeBlockwiseInt4(unsigned char * A, float * delta, float * min_val, T *out, const int n) {
+__global__ void kDequantizeBlockwiseInt4(float *code, unsigned char * A, float * delta, float * min_val, T *out, const int blocksize, const int n) {
     const int base_idx = blockIdx.x * TILE_SIZE;
 
     T vals[NUM_PER_TH * 2]; // 2 values per byte
@@ -4060,7 +4059,7 @@ template __global__ void kPercentileClipping<half, 2048, 4>(half * __restrict__ 
 template __global__ void kQuantizeBlockwise<dtype, blocksize, num_per_thread, stochastic, data_type_name>(float * code, dtype * __restrict__ const A, float *absmax, unsigned char *out, float * __restrict__ const rand, const int rand_offset, const int n); \
 
 #define MAKE_kQuantizeBlockwiseInt4(dtype, blocksize, num_per_thread) \
-template __global__ void kQuantizeBlockwiseInt4<dtype, blocksize, num_per_thread>(const dtype * __restrict__ const A, unsigned char *out, const int n);
+template __global__ void kQuantizeBlockwiseInt4<dtype, blocksize, num_per_thread>(float * code, dtype * __restrict__ const A, float *delta, float *min_val, unsigned char *out, const int n);\
 
 
 MAKE_kQuantizeBlockwiseInt4(half,  4096, 4)

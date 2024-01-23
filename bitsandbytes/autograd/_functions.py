@@ -565,7 +565,8 @@ def matmul(
 def matmul_4bit(A: tensor, B: tensor, quant_state: F.QuantState, out: tensor = None, bias=None):
     assert quant_state is not None
     if A.numel() == A.shape[-1] and A.requires_grad == False:
-        if A.shape[-1] % quant_state.blocksize != 0:
+        # if A.shape[-1] % quant_state.blocksize != 0:
+        if True:  # Temporary workaround since gemv_4bit is not returning correct values for some reason
             warn(f'Some matrices hidden dimension is not a multiple of {quant_state.blocksize} and efficient inference kernels are not supported for these (slow). Matrix input size found: {A.shape}')
             return MatMul4Bit.apply(A, B, out, bias, quant_state)
         else:

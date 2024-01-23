@@ -108,6 +108,8 @@ template <typename T> void quantizeBlockwiseInt4(float * code, T *A, float *delt
     kQuantizeBlockwiseInt4<T, 128, 2><<<num_blocks, 64>>>(code, A, delta, min_val, out, n);
   else if(blocksize == 64)
     kQuantizeBlockwiseInt4<T, 64, 2><<<num_blocks, 32>>>(code, A, delta, min_val, out, n);
+  else if(blocksize == 32)
+    kQuantizeBlockwiseInt4<T, 32, 1><<<num_blocks, 32>>>(code, A, delta, min_val, out, n);
 
 
   CUDA_CHECK_RETURN(cudaPeekAtLastError());

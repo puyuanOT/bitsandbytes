@@ -678,7 +678,7 @@ def quantize_blockwise(A: Tensor, code: Tensor = None, absmax: Tensor = None, ou
         out = torch.zeros_like(A, dtype=torch.uint8)
 
     if A.device.type != 'cpu':
-        assert blocksize in [4096, 2048, 1024, 512, 256, 128, 64]
+        assert blocksize in [4096, 2048, 1024, 512, 256, 128, 64, 32]
         cblocksize = ct.c_int32(blocksize)
         prev_device = pre_call(A.device)
         code = code.to(A.device)
@@ -763,8 +763,8 @@ def dequantize_blockwise(
     if A.device.type != 'cpu':
         device = pre_call(A.device)
         code = quant_state.code.to(A.device)
-        if quant_state.blocksize not in [2048, 4096, 1024, 512, 256, 128, 64]:
-            raise ValueError(f"The blockwise of {quant_state.blocksize} is not supported. Supported values: [2048, 4096, 1024, 512, 256, 128, 64]")
+        if quant_state.blocksize not in [2048, 4096, 1024, 512, 256, 128, 64, 32]:
+            raise ValueError(f"The blockwise of {quant_state.blocksize} is not supported. Supported values: [2048, 4096, 1024, 512, 256, 128, 64, 32]")
         is_on_gpu([A, absmax, out])
         if out.dtype == torch.float32:
             lib.cdequantize_blockwise_fp32(get_ptr(quant_state.code), get_ptr(A), get_ptr(absmax), get_ptr(out), ct.c_int(quant_state.blocksize), ct.c_int(A.numel()))
@@ -838,7 +838,7 @@ def quantize_fp4(A: Tensor, absmax: Tensor = None, out: Tensor = None, blocksize
 def quantize_nf4(A: Tensor, absmax: Tensor = None, out: Tensor = None, blocksize=64, compress_statistics=False, quant_storage=torch.uint8):
     return quantize_4bit(A, absmax, out, blocksize, compress_statistics, 'nf4', quant_storage)
 
-def quantize_4bit(A: torch.Tensor, delta: torch.Tensor = None, min_val: torch.Tensor = None, out: torch.Tensor = None, blocksize=64, quant_type='int4', quant_storage=torch.uint8) -> torch.Tensor:
+def quantize_4bit(A: torch.Tensor, delta: torch.Tensor = None, min_val: torch.Tensor = None, out: torch.Tensor = None, blocksize=32, quant_type='int4', quant_storage=torch.uint8) -> torch.Tensor:
     """
     Quantize tensor A in blocks of 4-bit values using delta and min_val for each block.
 
@@ -883,7 +883,7 @@ def quantize_4bit(A: torch.Tensor, delta: torch.Tensor = None, min_val: torch.Te
         mod = dtype2bytes[quant_storage] * 2
         out = torch.zeros(((n + 1) // mod, 1), dtype=quant_storage, device=A.device)
 
-    assert blocksize in [4096, 2048, 1024, 512, 256, 128, 64]
+    assert blocksize in [4096, 2048, 1024, 512, 256, 128, 64, 32]
 
     prev_device = pre_call(A.device)
     is_on_gpu([A, out, delta, min_val])

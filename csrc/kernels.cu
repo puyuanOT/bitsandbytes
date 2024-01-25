@@ -829,27 +829,37 @@ __global__ void kQuantizeBlockwise(float * code, T * __restrict__ const A, float
 
 template<typename T, int BLOCK_SIZE, int NUM_PER_TH>
 __global__ void kQuantizeBlockwiseInt4(float * code, T * __restrict__ const A, float *delta, float *min_val, unsigned char *out, const int n) {
+
     const int base_idx = blockIdx.x * BLOCK_SIZE;
-    // Discard the adaptions to block size of 32, this function won't work for thread=1, as we need at least two values in each thread to pack.
+
+    // Define a macro to solve the block size issue
+    #define BLOCK_DIM (BLOCK_SIZE == 32) ? BLOCK_SIZE : BLOCK_SIZE / NUM_PER_TH
+
     T vals[NUM_PER_TH];
-    unsigned char qvals[(NUM_PER_TH == 1) ? 1 : NUM_PER_TH / 2];  // Adapt to NUM_PER_TH=1 for block size of 32
+    unsigned char qvals[NUM_PER_TH / 2];
     float local_min_val, local_max_val, local_delta, inv_delta;
 
-    typedef cub::BlockLoad<T, BLOCK_SIZE / NUM_PER_TH, NUM_PER_TH, cub::BLOCK_LOAD_WARP_TRANSPOSE> LoadT;
-    typedef cub::BlockStore<unsigned char, BLOCK_SIZE / NUM_PER_TH, (NUM_PER_TH == 1) ? 1 : NUM_PER_TH / 2, cub::BLOCK_STORE_WARP_TRANSPOSE> StoreChar;    // Adapt to NUM_PER_TH=1 for block size of 32
-    typedef cub::BlockReduce<float, BLOCK_SIZE/NUM_PER_TH> BlockReduce;
+    typedef cub::BlockLoad<T, BLOCK_DIM, NUM_PER_TH, cub::BLOCK_LOAD_WARP_TRANSPOSE> LoadT;
+    typedef cub::BlockStore<unsigned char, BLOCK_DIM, NUM_PER_TH / 2, cub::BLOCK_STORE_WARP_TRANSPOSE> StoreChar;
+    typedef cub::BlockReduce<float, BLOCK_DIM> BlockReduce;
+
+    #undef BLOCK_DIM
 
     __shared__ typename LoadT::TempStorage loadt;
     __shared__ typename StoreChar::TempStorage storec;
     __shared__ typename BlockReduce::TempStorage reduce_min, reduce_max;
+    __shared__ float smem_min_value[1], smem_max_value[1];
 
-    for (unsigned int i = base_idx; i < n; i += gridDim.x * BLOCK_SIZE) {
-        int valid_items = min(n - i, BLOCK_SIZE);
-        LoadT(loadt).Load(&(A[i]), vals, valid_items, (T)0.0f);
+    for (unsigned int i = base_idx; i < gridDim.x * BLOCK_SIZE; i += gridDim.x * BLOCK_SIZE) {
+        int valid_items = n - i > BLOCK_SIZE ? BLOCK_SIZE : n - i;
 
-        // Calculate min and max
         local_min_val = FLT_MAX;
         local_max_val = -FLT_MAX;
+
+        __syncthreads();
+        LoadT(loadt).Load(&(A[i]), vals, valid_items, (T)0.0f);
+        // Calculate min and max
+
         for(int j = 0; j < NUM_PER_TH; j++) {
             local_min_val = min(local_min_val, (float)vals[j]);
             local_max_val = max(local_max_val, (float)vals[j]);
@@ -858,10 +868,28 @@ __global__ void kQuantizeBlockwiseInt4(float * code, T * __restrict__ const A, f
         local_min_val = BlockReduce(reduce_min).Reduce(local_min_val, cub::Min(), valid_items);
         local_max_val = BlockReduce(reduce_max).Reduce(local_max_val, cub::Max(), valid_items);
 
+        if(threadIdx.x == 0){
+          smem_min_value[0] = local_min_val;
+          smem_max_value[0] = local_max_val;
+        }
+
         __syncthreads();
 
-        local_delta = (local_max_val - local_min_val) / 15.0f; // 4 bits: 2^4 - 1 = 15
-        inv_delta = 1.0f / local_delta;
+        if(threadIdx.x == 0){
+          local_delta = (local_max_val - local_min_val) / 15.0f;
+          inv_delta = 1.0f / local_delta;
+
+          delta[i/BLOCK_SIZE] = local_delta;
+          min_val[i/BLOCK_SIZE] = local_min_val;
+        }
+        else {
+          local_min_val = smem_min_value[0];
+          local_max_val = smem_max_value[0];
+          local_delta = (local_max_val - local_min_val) / 15.0f;
+          inv_delta = 1.0f / local_delta;
+        }
+
+        __syncwarp();
 
         // Quantize
         for(int j = 0; j < NUM_PER_TH / 2; j++) {  // Abandon
@@ -874,13 +902,11 @@ __global__ void kQuantizeBlockwiseInt4(float * code, T * __restrict__ const A, f
             qvals[j] = (qval0 << 4) | qval1;
         }
 
-        StoreChar(storec).Store(&out[i / 2], qvals, (NUM_PER_TH == 1) ? valid_items : valid_items / 2);     // Adapt to NUM_PER_TH=1 for block size of 32
+        __syncthreads();
 
-        // Write back delta and min_val for this block
-        if(threadIdx.x == 0) {
-            delta[blockIdx.x] = local_delta;
-            min_val[blockIdx.x] = local_min_val;
-        }
+        if (BLOCK_SIZE == 32 && threadIdx.x >= 16) return;  // When block size is 32, we have to waste 16 threads unfortunately
+        StoreChar(storec).Store(&out[i / 2], qvals, (valid_items + 1)/2);     // Adapt to NUM_PER_TH=1 for block size of 32
+
     }
 }
 
@@ -4086,7 +4112,7 @@ MAKE_kQuantizeBlockwiseInt4(half,   512, 2)
 MAKE_kQuantizeBlockwiseInt4(half,   256, 2)
 MAKE_kQuantizeBlockwiseInt4(half,   128, 2)
 MAKE_kQuantizeBlockwiseInt4(half,    64, 2)
-MAKE_kQuantizeBlockwiseInt4(half,    32, 1)
+MAKE_kQuantizeBlockwiseInt4(half,    32, 2)
 
 MAKE_kQuantizeBlockwiseInt4(float, 4096, 4)
 MAKE_kQuantizeBlockwiseInt4(float, 2048, 4)
@@ -4095,7 +4121,7 @@ MAKE_kQuantizeBlockwiseInt4(float,  512, 2)
 MAKE_kQuantizeBlockwiseInt4(float,  256, 2)
 MAKE_kQuantizeBlockwiseInt4(float,  128, 2)
 MAKE_kQuantizeBlockwiseInt4(float,   64, 2)
-MAKE_kQuantizeBlockwiseInt4(float,   32, 1)
+MAKE_kQuantizeBlockwiseInt4(float,   32, 2)
 
 MAKE_kQuantizeBlockwiseInt4(__nv_bfloat16, 4096, 4)
 MAKE_kQuantizeBlockwiseInt4(__nv_bfloat16, 2048, 4)
@@ -4104,7 +4130,7 @@ MAKE_kQuantizeBlockwiseInt4(__nv_bfloat16,  512, 2)
 MAKE_kQuantizeBlockwiseInt4(__nv_bfloat16,  256, 2)
 MAKE_kQuantizeBlockwiseInt4(__nv_bfloat16,  128, 2)
 MAKE_kQuantizeBlockwiseInt4(__nv_bfloat16,   64, 2)
-MAKE_kQuantizeBlockwiseInt4(__nv_bfloat16,   32, 1)
+MAKE_kQuantizeBlockwiseInt4(__nv_bfloat16,   32, 2)
 
 
 MAKE_kQuantizeBlockwise(half,  4096, 4, 0, General8bit)

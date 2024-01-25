@@ -146,7 +146,7 @@ class Params4bit(torch.nn.Parameter):
             data: Optional[torch.Tensor] = None,
             requires_grad=True,
             quant_state: QuantState = None,
-            blocksize: int = 64,
+            blocksize: int = 32,
             quant_type: str = 'int4',
             quant_storage: torch.dtype = torch.uint8,
             module: Optional["Linear4bit"] = None,
